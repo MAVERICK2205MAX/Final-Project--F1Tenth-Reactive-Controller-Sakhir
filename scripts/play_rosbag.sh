@@ -5,7 +5,7 @@
 source /opt/ros/humble/setup.bash
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BAG_DIR="${WORKSPACE_DIR}/rosbags/f1tenth_run_01"
+BAG_DIR="${WORKSPACE_DIR}/ROS 2 Bag"
 RATE="${1:-1.0}"
 
 echo "=========================================================="

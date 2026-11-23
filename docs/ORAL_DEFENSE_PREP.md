@@ -74,19 +74,19 @@ The oral defense verifies the authenticity of your implementation and technical 
 "We use the standard ROS 2 command-line tools:
 1. **Record all topics:**
    ```bash
-   ros2 bag record -a -o f1tenth_run_01
+   ros2 bag record -a -o "ROS 2 Bag"
    ```
    This captures `/scan`, `/ego_racecar/odom`, `/drive`, `/tf`, `/tf_static`, and `/map`.
 2. **Inspect recording metadata:**
    ```bash
-   ros2 bag info rosbags/f1tenth_run_01
+   ros2 bag info "ROS 2 Bag"
    ```
    Displays duration, storage format (sqlite3), message counts, and serialized topics.
 3. **Playback:**
    ```bash
-   ros2 bag play rosbags/f1tenth_run_01
+   ros2 bag play "ROS 2 Bag"
    # Replay at half speed:
-   ros2 bag play rosbags/f1tenth_run_01 --rate 0.5
+   ros2 bag play "ROS 2 Bag" --rate 0.5
    ```"
 
 ---

@@ -80,19 +80,19 @@
 
 - **Recording Command:**
   ```bash
-  ros2 bag record -a -o f1tenth_run_01
+  ros2 bag record -a -o "ROS 2 Bag"
   ```
 - **Metadata Verification Command:**
   ```bash
-  ros2 bag info rosbags/f1tenth_run_01
+  ros2 bag info "ROS 2 Bag"
   ```
 - **Playback Command:**
   ```bash
-  ros2 bag play rosbags/f1tenth_run_01
+  ros2 bag play "ROS 2 Bag"
   ```
 - **Half-Speed Playback:**
   ```bash
-  ros2 bag play rosbags/f1tenth_run_01 --rate 0.5
+  ros2 bag play "ROS 2 Bag" --rate 0.5
   ```
 
 ---

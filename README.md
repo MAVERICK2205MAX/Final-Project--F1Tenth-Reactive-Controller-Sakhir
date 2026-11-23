@@ -166,13 +166,13 @@ To record all active topics into `f1tenth_run_01`:
 ```bash
 ./scripts/record_rosbag.sh
 # Or directly:
-ros2 bag record -a -o rosbags/f1tenth_run_01
+ros2 bag record -a -o "ROS 2 Bag"
 ```
 Press `Ctrl + C` when finished.
 
 ### 2. Inspecting Bag Metadata
 ```bash
-ros2 bag info rosbags/f1tenth_run_01
+ros2 bag info "ROS 2 Bag"
 ```
 
 ### 3. Playing Back Recorded Bag
@@ -180,6 +180,8 @@ ros2 bag info rosbags/f1tenth_run_01
 ./scripts/play_rosbag.sh 1.0
 # Or at half speed:
 ./scripts/play_rosbag.sh 0.5
+# Or directly:
+ros2 bag play "ROS 2 Bag" --rate 0.5
 ```
 
 ---
@@ -206,8 +208,10 @@ ros2 bag info rosbags/f1tenth_run_01
 │   ├── record_rosbag.sh                      # ROS 2 bag record script (Challenge 3)
 │   ├── play_rosbag.sh                        # ROS 2 bag playback script (Challenge 3)
 │   └── open_submission.sh                    # Submission launcher script
-├── rosbags/
-│   └── f1tenth_run_01/                       # Pre-recorded ROS 2 bag folder
+├── 'ROS 2 Bag'/                              # Official ROS 2 Bag Dataset (49,463 msgs)
+│   ├── f1tenth_run_01_0.db3                  # SQLite3 message database
+│   ├── metadata.yaml                         # Bag metadata specification
+│   └── README.md                             # Dataset guide & playback instructions
 ├── docs/
 │   └── ORAL_DEFENSE_PREP.md                  # Comprehensive Oral Defense Interview Guide
 └── src/
