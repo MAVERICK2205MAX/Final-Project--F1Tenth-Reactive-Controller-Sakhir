@@ -1,0 +1,19 @@
+# Python & ROS build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+install/
+log/
+*.log
+
+# Workspace & editor temporary files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Large raw video recordings (link via YouTube)
+*.mp4
+*.mkv
+*.avi

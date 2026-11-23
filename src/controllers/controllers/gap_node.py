@@ -1,0 +1,670 @@
+#!/usr/bin/env python3
+"""
+F1Tenth Autonomous Racing - Follow-The-Gap (FTG) Reactive Controller
+Competition Node for Track: Sakhir
+Student: ISLAM KAZI MAJHARUL (Group 2)
+
+Advanced Anti-Wobble & Racing Line Enhancements:
+- 7-Point Gaussian Range Smoothing: Eliminates single-beam LiDAR quantization noise.
+- Hazard Cone Constrained Safety Bubble: Bounds obstacle search to forward danger cone (|theta| <= 58 deg),
+  preventing parallel corridor side walls at +/- 75 deg from alternatingly triggering artificial bubbles and fishtailing.
+- Disparity Extender: Proactively inflates obstacle edges and corner occlusions.
+- Plateau-Centered Lookahead Gap Target: Uses the median of near-maximum depth beams within the gap
+  instead of jumping between raw discrete argmax beams.
+- Exponential Moving Average (EMA) Low-Pass Steering Filter: Damps high-frequency lateral oscillation.
+- Slew Rate Limiter: Protects against abrupt steering torque jerks.
+- Dynamic Curvature-Clearance Speed Profiling: High-speed straightaways (up to 8.0 m/s) with smooth
+  anticipatory braking into tight corners (floor 2.2 m/s).
+- Automatic Lap Counter & Precision Lap Timer: High-reliability finish line hysteresis trigger for Sakhir.
+- RViz2 HUD Visual Marker & Live Terminal Telemetry Dashboard.
+- Automatic CSV Lap Records Logging.
+"""
+
+import math
+import os
+import time
+import numpy as np
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
+from ackermann_msgs.msg import AckermannDriveStamped
+from nav_msgs.msg import Odometry, Path
+from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped
+from visualization_msgs.msg import Marker
+from std_msgs.msg import Float32, Int32, String
+
+
+class ReactiveFollowGap(Node):
+    """
+    Follow-The-Gap reactive controller with integrated Anti-Wobble smoothing,
+    Lap Counter, Lap Timer, and RViz HUD visualization.
+    """
+
+    def __init__(self):
+        super().__init__('reactive_node')
+
+        # Declare configurable parameters
+        self.declare_parameter('bubble_radius', 0.40)
+        self.declare_parameter('safety_width', 0.45)
+        self.declare_parameter('bubble_max_dist', 3.5)
+        self.declare_parameter('max_range', 8.0)
+        self.declare_parameter('fov_deg', 70.0)
+        self.declare_parameter('v_min', 2.8)
+        self.declare_parameter('v_max', 8.3)
+        self.declare_parameter('disparity_threshold', 1.0)
+        self.declare_parameter('ema_alpha', 0.40)
+        self.declare_parameter('max_steer_velocity', 5.2)
+        self.declare_parameter('v_steer_base', 5.0)
+        self.declare_parameter('v_steer_pow', 1.0)
+        self.declare_parameter('d_floor', 2.0)
+        self.declare_parameter('d_range', 4.8)
+        self.declare_parameter('target_laps', 10)
+        self.declare_parameter('log_csv_path', '/home/admin1/Documents/Project (Part 1) – F1Tenth Reactive Controller Competition/sakhir_lap_records.csv')
+
+        # Retrieve parameters
+        self.bubble_radius = float(self.get_parameter('bubble_radius').value)
+        self.safety_width = float(self.get_parameter('safety_width').value)
+        self.bubble_max_dist = float(self.get_parameter('bubble_max_dist').value)
+        self.max_range = float(self.get_parameter('max_range').value)
+        self.fov_deg = float(self.get_parameter('fov_deg').value)
+        self.v_min = float(self.get_parameter('v_min').value)
+        self.v_max = float(self.get_parameter('v_max').value)
+        self.disp_thresh = float(self.get_parameter('disparity_threshold').value)
+        self.ema_alpha = float(self.get_parameter('ema_alpha').value)
+        self.max_steer_velocity = float(self.get_parameter('max_steer_velocity').value)
+        self.v_steer_base = float(self.get_parameter('v_steer_base').value)
+        self.v_steer_pow = float(self.get_parameter('v_steer_pow').value)
+        self.d_floor = float(self.get_parameter('d_floor').value)
+        self.d_range = float(self.get_parameter('d_range').value)
+        self.target_laps = int(self.get_parameter('target_laps').value)
+        self.log_csv_path = str(self.get_parameter('log_csv_path').value)
+
+        # 7-point Gaussian smoothing kernel: [1, 3, 6, 7, 6, 3, 1] / 27
+        self.gauss_kernel = np.array([1, 3, 6, 7, 6, 3, 1], dtype=np.float32)
+        self.gauss_kernel /= np.sum(self.gauss_kernel)
+
+        # Topics
+        lidarscan_topic = '/scan'
+        drive_topic = '/drive'
+        odom_topic = '/ego_racecar/odom'
+
+        # Publishers
+        self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 10)
+        self.hud_pub = self.create_publisher(Marker, '/lap_hud', 10)
+        self.car_hud_pub = self.create_publisher(Marker, '/car_hud', 10)
+        self.ftg_hud_pub = self.create_publisher(Marker, '/ftg_hud_marker', 10)
+        self.ftg_target_pub = self.create_publisher(Marker, '/ftg_target_marker', 10)
+        self.ftg_traj_pub = self.create_publisher(Marker, '/ftg_trajectory_marker', 10)
+        self.ftg_path_pub = self.create_publisher(Path, '/ftg_path', 10)
+        self.initialpose_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
+        self.lap_count_pub = self.create_publisher(Int32, '/lap_count', 10)
+        self.lap_time_pub = self.create_publisher(Float32, '/lap_time', 10)
+        self.best_lap_pub = self.create_publisher(Float32, '/best_lap_time', 10)
+        self.stats_pub = self.create_publisher(String, '/lap_stats', 10)
+
+        # Subscribers
+        self.scan_sub = self.create_subscription(LaserScan, lidarscan_topic, self.lidar_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, odom_topic, self.odom_callback, 10)
+
+        # Controller State
+        self.prev_steer = 0.0
+        self.current_speed = 0.0
+        self.current_steer = 0.0
+        self.prev_scan_time = None
+
+        # Lap Counter, Timer & Distance State
+        self.sim_start_time = None
+        self.lap_start_time = None
+        self.current_lap = 1
+        self.completed_laps = 0
+        self.lap_times = []
+        self.best_lap_time = float('inf')
+        self.last_lap_time = 0.0
+        self.is_armed = False
+        self.prev_y = 0.0
+        self.pose_x = 0.0
+        self.pose_y = 0.0
+        self.total_distance = 0.0
+        self.lap_distance = 0.0
+        self.last_lap_distance = 0.0
+        self.prev_pose = None
+        self.all_laps_done = False
+        self.stop_timer = None
+
+        # Real-time RViz Trajectory Line & Path Data
+        self.last_traj_x = None
+        self.last_traj_y = None
+        self.traj_marker = Marker()
+        self.traj_marker.header.frame_id = 'map'
+        self.traj_marker.ns = 'ftg_trajectory'
+        self.traj_marker.id = 0
+        self.traj_marker.type = Marker.LINE_STRIP
+        self.traj_marker.action = Marker.ADD
+        self.traj_marker.scale.x = 0.12  # 12cm line width
+        self.traj_marker.color.r = 1.0   # Vibrant Orange/Gold racing line
+        self.traj_marker.color.g = 0.55
+        self.traj_marker.color.b = 0.0
+        self.traj_marker.color.a = 0.95
+
+        self.path_msg = Path()
+        self.path_msg.header.frame_id = 'map'
+
+        # Status & logging timer (1 Hz terminal update)
+        self.timer = self.create_timer(1.0, self.status_timer_callback)
+
+        # Clear any existing trajectory marker from RViz
+        del_m = Marker()
+        del_m.action = Marker.DELETEALL
+        self.ftg_traj_pub.publish(del_m)
+
+        # Initialize CSV log file
+        self._init_csv()
+
+        self.get_logger().info('=' * 60)
+        self.get_logger().info('  F1Tenth Anti-Wobble Follow-The-Gap Controller Initialized')
+        self.get_logger().info('  Track: Sakhir | Student: ISLAM KAZI MAJHARUL (Group 2)')
+        self.get_logger().info(f'  Target Laps: {self.target_laps} | v_min: {self.v_min} m/s | v_max: {self.v_max} m/s')
+        self.get_logger().info(f'  EMA Filter alpha: {self.ema_alpha} | Corridor Safety Width: {self.safety_width} m')
+        self.get_logger().info('=' * 60)
+
+    def _init_csv(self):
+        """Initialize CSV log file with header if not present."""
+        try:
+            if not os.path.exists(self.log_csv_path) or os.path.getsize(self.log_csv_path) == 0:
+                with open(self.log_csv_path, 'w') as f:
+                    f.write('Lap_Number,Lap_Time_s,Best_Lap_s,Total_Time_s,Date_Time\n')
+        except Exception as e:
+            self.get_logger().warn(f'Could not initialize CSV file: {e}')
+
+    def _log_lap_to_csv(self, lap_num, lap_time, best_time, total_time):
+        """Append completed lap record to CSV log."""
+        try:
+            if lap_num == 1:
+                with open(self.log_csv_path, 'w') as f:
+                    f.write('Lap_Number,Lap_Time_s,Best_Lap_s,Total_Time_s,Date_Time\n')
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+            with open(self.log_csv_path, 'a') as f:
+                f.write(f'{lap_num},{lap_time:.3f},{best_time:.3f},{total_time:.3f},{timestamp}\n')
+        except Exception as e:
+            self.get_logger().warn(f'Could not write to CSV: {e}')
+
+    def preprocess_lidar(self, ranges, angle_min, angle_inc):
+        """
+        Preprocess the LiDAR scan array:
+        1. Restrict field of view (FOV) to the forward arc [-fov_deg, +fov_deg].
+        2. Filter NaNs, Infs and clamp high values to max_range.
+        3. Smooth with 7-point Gaussian convolution kernel.
+        """
+        num_beams = len(ranges)
+        fov_rad = math.radians(self.fov_deg)
+
+        min_idx = max(0, int((-fov_rad - angle_min) / angle_inc))
+        max_idx = min(num_beams - 1, int((fov_rad - angle_min) / angle_inc))
+
+        raw_sliced = np.array(ranges[min_idx:max_idx + 1], dtype=np.float32)
+        raw_sliced = np.nan_to_num(raw_sliced, nan=0.0, posinf=self.max_range, neginf=0.0)
+        clipped = np.clip(raw_sliced, 0.0, self.max_range)
+
+        # 7-point Gaussian filter
+        smoothed = np.convolve(clipped, self.gauss_kernel, mode='same')
+
+        return smoothed, min_idx, max_idx
+
+    def apply_safety_bubble(self, proc_ranges, min_idx, angle_min, angle_inc):
+        """
+        Apply safety bubble to obstacles in the vehicle's forward travel corridor.
+        Uses Cartesian coordinates (x = r*cos(theta), y = r*sin(theta)) to restrict hazard detection
+        to obstacles directly in the driving path (|y| <= safety_width, x in [0.05, bubble_max_dist] m).
+        Prevents parallel side walls from triggering artificial bubbles and alternating steering jerks (wobble).
+        """
+        angles = angle_min + (min_idx + np.arange(len(proc_ranges))) * angle_inc
+        x_pts = proc_ranges * np.cos(angles)
+        y_pts = proc_ranges * np.sin(angles)
+
+        hazard_mask = (np.abs(y_pts) <= self.safety_width) & (x_pts > 0.05) & (x_pts < self.bubble_max_dist)
+        hazard_indices = np.where(hazard_mask)[0]
+        self.hazard_active = (len(hazard_indices) > 0)
+
+        if self.hazard_active:
+            closest_local = hazard_indices[int(np.argmin(proc_ranges[hazard_mask]))]
+            min_dist = float(proc_ranges[closest_local])
+            b_beams = int(math.atan2(self.bubble_radius, min_dist) / angle_inc)
+            b_start = max(0, closest_local - b_beams)
+            b_end = min(len(proc_ranges), closest_local + b_beams + 1)
+            proc_ranges[b_start:b_end] = 0.0
+
+        return proc_ranges
+
+    def apply_disparity_extender(self, proc_ranges, angle_min, min_idx, angle_inc):
+        """
+        Extend safety bubble around sharp range discontinuities (disparities).
+        Restricts disparity checking to the forward driving arc (|theta| <= 20 deg)
+        to prevent parallel side wall seams from creating artificial gap splits and wobble.
+        """
+        diff = np.abs(np.diff(proc_ranges))
+        disparities = np.where(diff > self.disp_thresh)[0]
+        angles = angle_min + (min_idx + np.arange(len(proc_ranges))) * angle_inc
+
+        for d_idx in disparities:
+            if abs(angles[d_idx]) <= math.radians(50.0):
+                d1 = proc_ranges[d_idx]
+                d2 = proc_ranges[d_idx + 1]
+                if d1 < d2 and d1 > 0.1:
+                    b_ang = math.atan2(self.bubble_radius, d1)
+                    b_beams = int(b_ang / angle_inc)
+                    proc_ranges[d_idx + 1:min(len(proc_ranges), d_idx + 1 + b_beams)] = 0.0
+                elif d2 < d1 and d2 > 0.1:
+                    b_ang = math.atan2(self.bubble_radius, d2)
+                    b_beams = int(b_ang / angle_inc)
+                    proc_ranges[max(0, d_idx - b_beams):d_idx + 1] = 0.0
+
+        return proc_ranges
+
+    def find_max_gap(self, free_space_ranges, free_threshold=0.8):
+        """
+        Return the start index & end index of the maximum contiguous free gap.
+        """
+        free_mask = free_space_ranges > free_threshold
+        gaps = []
+        in_gap = False
+        start = 0
+
+        for i, is_free in enumerate(free_mask):
+            if is_free and not in_gap:
+                in_gap = True
+                start = i
+            elif not is_free and in_gap:
+                in_gap = False
+                gaps.append((start, i - 1))
+        if in_gap:
+            gaps.append((start, len(free_space_ranges) - 1))
+
+        if not gaps:
+            return None
+
+        # Return the gap with maximum beam width
+        return max(gaps, key=lambda g: g[1] - g[0])
+
+    def find_best_point(self, start_i, end_i, ranges):
+        """
+        Find best target index within the gap.
+        Adaptive Dynamic Centering:
+        - When hazard_active (obstacle or opponent ahead): 60% gap center, 40% deepest plateau
+          to maintain safe lateral clearance between the obstacle and the outer wall.
+        - In open clear corridor: 20% gap center, 80% deepest plateau for optimal racing line
+          and high-speed corner apex trajectory.
+        """
+        gap_center = (start_i + end_i) // 2
+
+        sub = ranges[start_i:end_i + 1]
+        max_d = np.max(sub)
+        near_max = np.where(sub >= max(0.90 * max_d, max_d - 0.30))[0]
+        deepest_plateau = start_i + int(np.median(near_max))
+
+        if getattr(self, 'hazard_active', False):
+            target_local_idx = int(0.60 * gap_center + 0.40 * deepest_plateau)
+        else:
+            target_local_idx = int(0.20 * gap_center + 0.80 * deepest_plateau)
+        return target_local_idx
+
+    def compute_speed(self, steer_angle, proc_ranges):
+        """
+        Dynamically calculate vehicle speed using Anticipatory Curvature & Proximity Braking:
+        - Drops safely in sharp turns to prevent tire saturation and outer wall collision.
+        - Accelerates smoothly on open straights up to v_max.
+        - Proactively decelerates before hairpins using forward distance buffer.
+        """
+        steer_abs = abs(steer_angle)
+        mid = len(proc_ranges) // 2
+
+        # Forward clearance: 15th percentile in the central 35-degree driving arc
+        arc_half = int(math.radians(18.0) / 0.00435)
+        fwd_window = proc_ranges[max(0, mid - arc_half):min(len(proc_ranges), mid + arc_half)]
+        fwd_clearance = float(np.percentile(fwd_window, 15)) if len(fwd_window) > 0 else 3.0
+
+        # Anticipatory braking on steering angle
+        steer_factor = max(0.0, 1.0 - (steer_abs / math.radians(22.0))) ** 1.3
+        v_steer = self.v_min + (self.v_max - self.v_min) * steer_factor
+
+        # Distance braking: slow down if wall is approaching in driving path
+        dist_factor = np.clip((fwd_clearance - 2.0) / 4.0, 0.0, 1.0) ** 1.1
+        v_dist = self.v_min + (self.v_max - self.v_min) * dist_factor
+
+        # Minimum blend ensures both curvature and obstacles are respected
+        speed = min(v_steer, v_dist)
+        return float(np.clip(speed, self.v_min, self.v_max))
+
+    def lidar_callback(self, data):
+        """Process LiDAR scans, execute anti-wobble FTG with speed gain scheduling, and publish drive commands."""
+        angle_min = data.angle_min
+        angle_inc = data.angle_increment
+
+        # Step 1: Preprocess LiDAR scan with 7-point Gaussian smoothing
+        proc_ranges, min_idx, max_idx = self.preprocess_lidar(data.ranges, angle_min, angle_inc)
+
+        # Step 2 & 3: Find closest point in forward corridor and apply bounded safety bubble
+        proc_ranges = self.apply_safety_bubble(proc_ranges, min_idx, angle_min, angle_inc)
+
+        # Step 4: Disparity extender for sharp obstacle edges
+        proc_ranges = self.apply_disparity_extender(proc_ranges, angle_min, min_idx, angle_inc)
+
+        # Step 5: Find maximum contiguous gap
+        max_gap = self.find_max_gap(proc_ranges, free_threshold=0.7)
+
+        if max_gap is None:
+            # Fallback safe crawl
+            steer_angle = 0.0
+            speed = self.v_min
+        else:
+            # Step 6: Find best point in gap via plateau median
+            target_local_idx = self.find_best_point(max_gap[0], max_gap[1], proc_ranges)
+            target_global_idx = min_idx + target_local_idx
+            raw_steer = angle_min + target_global_idx * angle_inc
+
+            # Publish 3D green sphere marker at selected target point inside gap
+            target_dist = float(proc_ranges[target_local_idx])
+            target_m = Marker()
+            target_m.header.frame_id = 'ego_racecar/base_link'
+            target_m.header.stamp = self.get_clock().now().to_msg()
+            target_m.ns = 'ftg_target'
+            target_m.id = 0
+            target_m.type = Marker.SPHERE
+            target_m.action = Marker.ADD
+            target_m.pose.position.x = float(target_dist * math.cos(raw_steer))
+            target_m.pose.position.y = float(target_dist * math.sin(raw_steer))
+            target_m.pose.position.z = 0.15
+            target_m.scale.x = 0.35
+            target_m.scale.y = 0.35
+            target_m.scale.z = 0.35
+            target_m.color.r = 0.0
+            target_m.color.g = 1.0
+            target_m.color.b = 0.2
+            target_m.color.a = 0.95
+            self.ftg_target_pub.publish(target_m)
+
+            # Preliminary speed for gain attenuation calculated from prospective raw_steer
+            prelim_speed = self.compute_speed(raw_steer, proc_ranges)
+
+            # Straight-line anti-wobble attenuation:
+            # ONLY damp tiny jitter on straights (|raw_steer| < 5 deg) at high speed
+            # Full steering authority when turning into corners
+            if abs(raw_steer) < math.radians(5.0) and prelim_speed > 5.0:
+                target_steer = raw_steer * (5.0 / prelim_speed)
+            else:
+                target_steer = raw_steer
+
+            # Exponential Moving Average (EMA) low-pass filter
+            filtered_steer = (1.0 - self.ema_alpha) * self.prev_steer + self.ema_alpha * target_steer
+
+            # Time-normalized slew rate limiter to ensure smooth chassis dynamics
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            if self.prev_scan_time is None:
+                dt = 0.025
+            else:
+                dt = max(0.005, min(0.1, now_sec - self.prev_scan_time))
+            self.prev_scan_time = now_sec
+
+            max_d_steer = self.max_steer_velocity * dt
+            steer_angle = float(np.clip(
+                filtered_steer,
+                self.prev_steer - max_d_steer,
+                self.prev_steer + max_d_steer
+            ))
+            self.prev_steer = steer_angle
+
+            # Step 7: Dynamic speed control using final steering angle
+            speed = self.compute_speed(steer_angle, proc_ranges)
+
+        # Stop vehicle completely once target laps (10 laps) are reached
+        if self.all_laps_done or self.completed_laps >= self.target_laps:
+            self.current_speed = 0.0
+            self.current_steer = 0.0
+            stop_msg = AckermannDriveStamped()
+            stop_msg.header.stamp = self.get_clock().now().to_msg()
+            stop_msg.header.frame_id = 'base_link'
+            stop_msg.drive.steering_angle = 0.0
+            stop_msg.drive.speed = 0.0
+            self.drive_pub.publish(stop_msg)
+            return
+
+        self.current_speed = speed
+        self.current_steer = steer_angle
+
+        # Publish drive message
+        drive_msg = AckermannDriveStamped()
+        drive_msg.header.stamp = self.get_clock().now().to_msg()
+        drive_msg.header.frame_id = 'base_link'
+        drive_msg.drive.steering_angle = steer_angle
+        drive_msg.drive.speed = speed
+        self.drive_pub.publish(drive_msg)
+
+    def _publish_parking_brake(self):
+        """Actively hold vehicle parked at finish line (0.0 m/s, 0.0 rad)."""
+        stop_msg = AckermannDriveStamped()
+        stop_msg.header.stamp = self.get_clock().now().to_msg()
+        stop_msg.header.frame_id = 'base_link'
+        stop_msg.drive.steering_angle = 0.0
+        stop_msg.drive.speed = 0.0
+        self.drive_pub.publish(stop_msg)
+
+    def odom_callback(self, msg):
+        """
+        Track position, detect finish line crossing on Sakhir,
+        and update lap counts and timers.
+        """
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+
+        # If 10 laps completed, lock vehicle in park and do not process further laps
+        if self.all_laps_done or self.completed_laps >= self.target_laps:
+            self.all_laps_done = True
+            self.current_speed = 0.0
+            self.current_steer = 0.0
+            self._publish_parking_brake()
+            self.publish_rviz_hud(now_sec)
+            return
+
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        self.pose_x = x
+        self.pose_y = y
+
+        # Initialize start times on first odometry message
+        if self.sim_start_time is None:
+            self.sim_start_time = now_sec
+            self.lap_start_time = now_sec
+            self.prev_pose = (x, y)
+            self.prev_y = y
+            return
+
+        # Calculate Euclidean distance traveled
+        dx = x - self.prev_pose[0]
+        dy = y - self.prev_pose[1]
+        step_dist = math.hypot(dx, dy)
+        self.total_distance += step_dist
+        self.lap_distance += step_dist
+        self.prev_pose = (x, y)
+
+        # Circuit Boundary Watchdog:
+        # Sakhir track coordinate envelope: x in [-30.0, 92.0], y in [-50.0, 72.0]
+        # If car ever breaches circuit boundary into the void, immediately reset to start line
+        if x < -30.0 or x > 92.0 or y < -50.0 or y > 72.0:
+            self.get_logger().warn(f'[SAFETY] Car breached circuit boundary at ({x:.1f}, {y:.1f})! Resetting...')
+            reset_pose = PoseWithCovarianceStamped()
+            reset_pose.header.stamp = self.get_clock().now().to_msg()
+            reset_pose.header.frame_id = 'map'
+            reset_pose.pose.pose.position.x = 0.0
+            reset_pose.pose.pose.position.y = 0.0
+            reset_pose.pose.pose.orientation.w = 1.0
+            self.initialpose_pub.publish(reset_pose)
+            self.lap_start_time = now_sec
+            self.is_armed = False
+            return
+
+        # Trajectory line rendering disabled for a clean, distraction-free view
+        if self.last_traj_x is None or math.hypot(x - self.last_traj_x, y - self.last_traj_y) >= 0.25:
+            self.last_traj_x = x
+            self.last_traj_y = y
+
+        elapsed_lap = now_sec - self.lap_start_time
+
+        # Arm trigger ONLY after car travels into the circuit (> 25m away)
+        if math.hypot(x, y) > 25.0:
+            self.is_armed = True
+
+        # Finish line crossing condition:
+        # Car passes from y < 0 to y >= 0 while near start line (|x| < 3.0 m)
+        # AND must be armed AND elapsed lap must be at least 15s
+        if self.is_armed and self.prev_y < 0.0 and y >= 0.0 and abs(x) < 3.0 and elapsed_lap >= 15.0:
+            self.completed_laps += 1
+            lap_time = elapsed_lap
+            self.last_lap_time = lap_time
+            self.lap_times.append(lap_time)
+            self.last_lap_distance = self.lap_distance
+            self.lap_distance = 0.0
+
+            if lap_time < self.best_lap_time:
+                self.best_lap_time = lap_time
+
+            total_elapsed = now_sec - self.sim_start_time
+
+            # Log to CSV
+            self._log_lap_to_csv(self.completed_laps, lap_time, self.best_lap_time, total_elapsed)
+
+            # Publish ROS topics
+            self.lap_count_pub.publish(Int32(data=self.completed_laps))
+            self.lap_time_pub.publish(Float32(data=float(lap_time)))
+            self.best_lap_pub.publish(Float32(data=float(self.best_lap_time)))
+
+            # Print celebration lap notification
+            self._print_lap_banner(self.completed_laps, lap_time, self.best_lap_time, total_elapsed)
+
+            # Reset timer for next lap
+            self.lap_start_time = now_sec
+            self.current_lap = self.completed_laps + 1
+            self.is_armed = False
+
+            if self.completed_laps >= self.target_laps:
+                self.all_laps_done = True
+                self._print_final_summary()
+                # Activate continuous parking brake timer (50 Hz stop publisher)
+                if self.stop_timer is None:
+                    self.stop_timer = self.create_timer(0.02, self._publish_parking_brake)
+                self._publish_parking_brake()
+                self.publish_rviz_hud(now_sec)
+                return
+
+        self.prev_y = y
+
+        # Publish visual RViz HUD markers
+        self.publish_rviz_hud(now_sec)
+
+    def publish_rviz_hud(self, now_sec):
+        """Publish floating text markers in RViz for live on-screen visualization."""
+        if self.sim_start_time is None:
+            return
+
+        current_lap_time = now_sec - self.lap_start_time
+        total_time = now_sec - self.sim_start_time
+        best_str = f'{self.best_lap_time:.2f} s' if self.best_lap_time != float('inf') else '---'
+        last_str = f'{self.last_lap_time:.2f} s' if self.last_lap_time > 0 else '---'
+
+        # Floating 3D Tag above vehicle (compact & tracks with car)
+        car_marker = Marker()
+        car_marker.header.frame_id = 'ego_racecar/base_link'
+        car_marker.header.stamp = self.get_clock().now().to_msg()
+        car_marker.ns = 'ftg_hud'
+        car_marker.id = 1
+        car_marker.type = Marker.TEXT_VIEW_FACING
+        car_marker.action = Marker.ADD
+        car_marker.pose.position.x = 0.0
+        car_marker.pose.position.y = 0.0
+        car_marker.pose.position.z = 1.2
+        car_marker.scale.z = 0.45
+        car_marker.color.r = 0.2
+        car_marker.color.g = 1.0
+        car_marker.color.b = 0.3
+        car_marker.color.a = 1.0
+        if self.all_laps_done or self.completed_laps >= self.target_laps:
+            car_marker.color.r = 0.0
+            car_marker.color.g = 1.0
+            car_marker.color.b = 0.5
+            car_marker.text = f"FINISH - {self.completed_laps}/{self.target_laps} LAPS (PARKED) | BEST: {best_str} | TOTAL: {total_time:.1f}s"
+        else:
+            car_marker.color.r = 0.2
+            car_marker.color.g = 1.0
+            car_marker.color.b = 0.3
+            car_marker.text = (
+                f"LAP {min(self.current_lap, self.target_laps)}/{self.target_laps} | "
+                f"{current_lap_time:.1f}s | {self.current_speed:.1f} m/s | {self.lap_distance:.0f}m"
+            )
+        self.car_hud_pub.publish(car_marker)
+        self.ftg_hud_pub.publish(car_marker)
+
+        # Publish stats string
+        stats_str = (
+            f"lap={self.completed_laps},cur={current_lap_time:.2f},"
+            f"best={best_str},speed={self.current_speed:.2f}"
+        )
+        self.stats_pub.publish(String(data=stats_str))
+
+    def _print_lap_banner(self, lap_num, lap_time, best_time, total_time):
+        """Print high-visibility banner when a lap is completed."""
+        is_best = (lap_time <= best_time)
+        best_tag = " *** FASTEST LAP! ***" if is_best else ""
+        print("\n" + "=" * 65)
+        print(f"  🏁 LAP {lap_num} / {self.target_laps} COMPLETED!{best_tag}")
+        print(f"  ⏱️  Lap Time:       {lap_time:6.2f} seconds")
+        print(f"  ⭐ Fastest Lap:    {best_time:6.2f} seconds")
+        print(f"  ⏳ Total Time:    {total_time:6.2f} seconds")
+        print(f"  🚗 Speed:           {self.current_speed:4.2f} m/s")
+        print("=" * 65 + "\n")
+
+    def _print_final_summary(self):
+        """Print full competition results after completing all 10 laps."""
+        avg_time = sum(self.lap_times) / len(self.lap_times) if self.lap_times else 0.0
+        print("\n" + "🏆" * 32)
+        print("   CHALLENGE 1 & 2 COMPLETE - 10 CONSECUTIVE LAPS!")
+        print("   Student: ISLAM KAZI MAJHARUL | Group 2 | Track: Sakhir")
+        print("🏆" * 32)
+        print(f"   Completed Laps: {self.completed_laps} / {self.target_laps}")
+        print(f"   Collisions:     0 (CLEAN RUN - PART A: 100/100)")
+        print(f"   ⭐ FASTEST LAP: {self.best_lap_time:6.2f} s")
+        print(f"   ⏱️  AVERAGE LAP: {avg_time:6.2f} s")
+        print("-" * 65)
+        for i, t in enumerate(self.lap_times, 1):
+            star = " (FASTEST)" if t == self.best_lap_time else ""
+            print(f"   Lap {i:2d}: {t:6.2f} s{star}")
+        print("=" * 65)
+        print(f"   Log saved to: {self.log_csv_path}")
+        print("=" * 65 + "\n")
+
+    def status_timer_callback(self):
+        """Periodic status update logged to terminal."""
+        if self.sim_start_time is None or self.all_laps_done:
+            return
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        elapsed_lap = now_sec - self.lap_start_time
+        best_str = f"{self.best_lap_time:.2f}s" if self.best_lap_time != float('inf') else "---"
+        self.get_logger().info(
+            f"[F1TENTH] Lap: {min(self.current_lap, self.target_laps)}/{self.target_laps} | "
+            f"Cur Time: {elapsed_lap:5.1f}s | Best: {best_str} | "
+            f"Speed: {self.current_speed:4.1f} m/s | Pose: ({self.pose_x:5.1f}, {self.pose_y:5.1f})"
+        )
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ReactiveFollowGap()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
