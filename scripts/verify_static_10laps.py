@@ -209,7 +209,7 @@ def main():
             armed = True
 
         # Finish line crossing
-        if armed and prev_y < 0.0 and y >= 0.0 and abs(x) < 3.0:
+        if armed and prev_y < 0.0 and y >= 0.0 and abs(x) < 6.5:
             lap_time = sim_time - lap_start_sim_time
             lap_count += 1
             lap_times.append(lap_time)

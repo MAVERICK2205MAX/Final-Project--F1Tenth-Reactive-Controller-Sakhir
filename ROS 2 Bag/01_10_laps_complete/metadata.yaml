@@ -1,0 +1,80 @@
+rosbag2_bagfile_information:
+  version: 5
+  storage_identifier: sqlite3
+  duration:
+    nanoseconds: 766170000000
+  starting_time:
+    nanoseconds_since_epoch: 1795437476606706943
+  message_count: 46002
+  topics_with_message_count:
+    - topic_metadata:
+        name: /ftg_target_marker
+        type: visualization_msgs/msg/Marker
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 0
+    - topic_metadata:
+        name: /car_hud
+        type: visualization_msgs/msg/Marker
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 7662
+    - topic_metadata:
+        name: /current_lap_time
+        type: std_msgs/msg/Float32
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 7662
+    - topic_metadata:
+        name: /lap_time
+        type: std_msgs/msg/Float32
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 10
+    - topic_metadata:
+        name: /lap_count
+        type: std_msgs/msg/Int32
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 10
+    - topic_metadata:
+        name: /best_lap_time
+        type: std_msgs/msg/Float32
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 10
+    - topic_metadata:
+        name: /drive
+        type: ackermann_msgs/msg/AckermannDriveStamped
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 7662
+    - topic_metadata:
+        name: /lap_stats
+        type: std_msgs/msg/String
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 7662
+    - topic_metadata:
+        name: /ego_racecar/odom
+        type: nav_msgs/msg/Odometry
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 7662
+    - topic_metadata:
+        name: /scan
+        type: sensor_msgs/msg/LaserScan
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 7662
+  compression_format: ""
+  compression_mode: ""
+  relative_file_paths:
+    - 01_10_laps_complete_0.db3
+  files:
+    - path: 01_10_laps_complete_0.db3
+      starting_time:
+        nanoseconds_since_epoch: 1795437476606706943
+      duration:
+        nanoseconds: 766170000000
+      message_count: 46002

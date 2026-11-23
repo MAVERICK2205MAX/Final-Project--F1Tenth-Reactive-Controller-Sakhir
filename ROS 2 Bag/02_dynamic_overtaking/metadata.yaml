@@ -1,0 +1,74 @@
+rosbag2_bagfile_information:
+  version: 5
+  storage_identifier: sqlite3
+  duration:
+    nanoseconds: 44949999999
+  starting_time:
+    nanoseconds_since_epoch: 1795437509079061888
+  message_count: 7200
+  topics_with_message_count:
+    - topic_metadata:
+        name: /ftg_target_marker
+        type: visualization_msgs/msg/Marker
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 0
+    - topic_metadata:
+        name: /overtake_status
+        type: std_msgs/msg/String
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 900
+    - topic_metadata:
+        name: /car_hud
+        type: visualization_msgs/msg/Marker
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 900
+    - topic_metadata:
+        name: /opp3/odom
+        type: nav_msgs/msg/Odometry
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 900
+    - topic_metadata:
+        name: /opp2/odom
+        type: nav_msgs/msg/Odometry
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 900
+    - topic_metadata:
+        name: /opp1/odom
+        type: nav_msgs/msg/Odometry
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 900
+    - topic_metadata:
+        name: /drive
+        type: ackermann_msgs/msg/AckermannDriveStamped
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 900
+    - topic_metadata:
+        name: /ego_racecar/odom
+        type: nav_msgs/msg/Odometry
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 900
+    - topic_metadata:
+        name: /scan
+        type: sensor_msgs/msg/LaserScan
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 900
+  compression_format: ""
+  compression_mode: ""
+  relative_file_paths:
+    - 02_dynamic_overtaking_0.db3
+  files:
+    - path: 02_dynamic_overtaking_0.db3
+      starting_time:
+        nanoseconds_since_epoch: 1795437509079061888
+      duration:
+        nanoseconds: 44949999999
+      message_count: 7200

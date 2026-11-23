@@ -60,7 +60,11 @@ class ReactiveFollowGap(Node):
         self.declare_parameter('d_floor', 2.0)
         self.declare_parameter('d_range', 4.8)
         self.declare_parameter('target_laps', 10)
-        self.declare_parameter('log_csv_path', '/home/admin1/Documents/Project (Part 1) – F1Tenth Reactive Controller Competition/sakhir_lap_records.csv')
+        folder = 'Final Project - Reactive Controller Competition in' + chr(10) + 'F1Tenth'
+        default_csv = os.path.join(os.path.expanduser('~/Documents'), folder, 'sakhir_lap_records.csv')
+        if not os.path.exists(os.path.dirname(default_csv)):
+            default_csv = os.path.expanduser('~/sakhir_lap_records.csv')
+        self.declare_parameter('log_csv_path', default_csv)
 
         # Retrieve parameters
         self.bubble_radius = float(self.get_parameter('bubble_radius').value)
@@ -100,6 +104,7 @@ class ReactiveFollowGap(Node):
         self.initialpose_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
         self.lap_count_pub = self.create_publisher(Int32, '/lap_count', 10)
         self.lap_time_pub = self.create_publisher(Float32, '/lap_time', 10)
+        self.current_lap_time_pub = self.create_publisher(Float32, '/current_lap_time', 10)
         self.best_lap_pub = self.create_publisher(Float32, '/best_lap_time', 10)
         self.stats_pub = self.create_publisher(String, '/lap_stats', 10)
 
@@ -512,10 +517,15 @@ class ReactiveFollowGap(Node):
         if math.hypot(x, y) > 25.0:
             self.is_armed = True
 
-        # Finish line crossing condition:
-        # Car passes from y < 0 to y >= 0 while near start line (|x| < 3.0 m)
-        # AND must be armed AND elapsed lap must be at least 15s
-        if self.is_armed and self.prev_y < 0.0 and y >= 0.0 and abs(x) < 3.0 and elapsed_lap >= 15.0:
+        # Robust finish line crossing:
+        # 1. Car passes from y < 0 to y >= 0 while in the wide track width corridor (|x| < 6.5m)
+        # 2. OR car completes full circuit lap distance (> 410m) and reaches start straight (|y| < 1.5m, |x| < 5.0m)
+        crossed_finish_line = (
+            (self.prev_y < 0.0 and y >= 0.0 and abs(x) < 6.5) or
+            (self.lap_distance > 410.0 and abs(y) < 1.5 and abs(x) < 5.0)
+        )
+
+        if self.is_armed and crossed_finish_line and elapsed_lap >= 20.0:
             self.completed_laps += 1
             lap_time = elapsed_lap
             self.last_lap_time = lap_time
@@ -645,6 +655,7 @@ class ReactiveFollowGap(Node):
             return
         now_sec = self.get_clock().now().nanoseconds * 1e-9
         elapsed_lap = now_sec - self.lap_start_time
+        self.current_lap_time_pub.publish(Float32(data=float(elapsed_lap)))
         best_str = f"{self.best_lap_time:.2f}s" if self.best_lap_time != float('inf') else "---"
         self.get_logger().info(
             f"[F1TENTH] Lap: {min(self.current_lap, self.target_laps)}/{self.target_laps} | "

@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # Official ROS 2 Bag Playback Utility per Final Project Specification
-# Usage: ./play_rosbag.sh [playback_rate] (default: 1.0, half speed: 0.5)
+# Usage: ./play_rosbag.sh [bag_number: 1 or 2] [playback_rate] (default: 1, 1.0)
 
 source /opt/ros/humble/setup.bash
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BAG_DIR="${WORKSPACE_DIR}/ROS 2 Bag"
-RATE="${1:-1.0}"
+CHOICE="${1:-1}"
+RATE="${2:-1.0}"
+
+if [ "${CHOICE}" == "2" ] || [ "${CHOICE}" == "dynamic" ]; then
+    BAG_DIR="${WORKSPACE_DIR}/ROS 2 Bag/02_dynamic_overtaking"
+    BAG_NAME="Challenge 2: Dynamic Multi-Robot Overtaking"
+else
+    BAG_DIR="${WORKSPACE_DIR}/ROS 2 Bag/01_10_laps_complete"
+    BAG_NAME="Challenge 1: 10 Laps Complete (Static Obstacles)"
+fi
 
 echo "=========================================================="
 echo "  F1Tenth ROS 2 Bag Playback Utility"
-echo "  Target Bag: ${BAG_DIR}"
+echo "  Selected: ${BAG_NAME}"
+echo "  Directory: ${BAG_DIR}"
 echo "  Playback Rate: ${RATE}x"
 echo "=========================================================="
 

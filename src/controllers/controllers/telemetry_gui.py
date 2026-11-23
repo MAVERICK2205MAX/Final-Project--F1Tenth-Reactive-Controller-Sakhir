@@ -32,6 +32,7 @@ class TelemetryGUI(Node):
         # Subscriptions
         self.create_subscription(Int32, '/lap_count', self.lap_count_cb, 10)
         self.create_subscription(Float32, '/lap_time', self.lap_time_cb, 10)
+        self.create_subscription(Float32, '/current_lap_time', self.cur_lap_time_cb, 10)
         self.create_subscription(Float32, '/best_lap_time', self.best_lap_cb, 10)
         self.create_subscription(Odometry, '/ego_racecar/odom', self.odom_cb, 10)
         self.create_subscription(AckermannDriveStamped, '/drive', self.drive_cb, 10)
@@ -41,6 +42,7 @@ class TelemetryGUI(Node):
         self.target_laps = 10
         self.current_lap_start_time = None
         self.sim_start_time = None
+        self.live_lap_time = 0.0
         self.best_lap = float('inf')
         self.last_lap = 0.0
         self.lap_splits = []
@@ -58,6 +60,10 @@ class TelemetryGUI(Node):
 
     def lap_count_cb(self, msg):
         self.completed_laps = min(int(msg.data), self.target_laps)
+
+    def cur_lap_time_cb(self, msg):
+        if self.completed_laps < self.target_laps:
+            self.live_lap_time = float(msg.data)
 
     def lap_time_cb(self, msg):
         if len(self.lap_splits) >= self.target_laps:
@@ -127,15 +133,18 @@ class TelemetryGUI(Node):
 
         # Elapsed times
         now_t = time.time()
-        if self.current_lap_start_time is not None:
+        is_finished = (self.completed_laps >= self.target_laps)
+        if is_finished:
+            cur_lap_time = self.last_lap
+        elif hasattr(self, 'live_lap_time') and self.live_lap_time > 0.0:
+            cur_lap_time = self.live_lap_time
+        elif self.current_lap_start_time is not None:
             cur_lap_time = now_t - self.current_lap_start_time
         else:
             cur_lap_time = 0.0
 
-        if self.sim_start_time is not None:
-            total_time = now_t - self.sim_start_time
-        else:
-            total_time = 0.0
+        completed_split_sum = sum(split for _, split in self.lap_splits)
+        total_time = completed_split_sum + (cur_lap_time if not is_finished else 0.0)
 
         # Status badge (top right)
         is_finished = (self.completed_laps >= self.target_laps)

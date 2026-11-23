@@ -1,0 +1,9 @@
+Circuit,Test_Mode,Steps,Sim_Time_s,Overtakes_or_Distance,Collision_Status,Result
+Sakhir Circuit (5 Static Obstacles),Single-Car Reactive,3000,30.0,153.8m,PASS (0 COL),PASSED
+Sakhir Circuit (5 Static Obstacles),4-Robot Dynamic Overtake,2500,25.0,3/3 Overtaken,PASS (0 COL, 3/3 Overtaken),PASSED
+Catalunya Circuit,Single-Car Reactive,3000,30.0,154.9m,PASS (0 COL),PASSED
+Catalunya Circuit,4-Robot Dynamic Overtake,2500,25.0,3/3 Overtaken,PASS (0 COL, 3/3 Overtaken),PASSED
+Sepang Circuit,Single-Car Reactive,3000,30.0,169.7m,PASS (0 COL),PASSED
+Sepang Circuit,4-Robot Dynamic Overtake,2500,25.0,3/3 Overtaken,PASS (0 COL, 3/3 Overtaken),PASSED
+Zandvoort Circuit,Single-Car Reactive,3000,30.0,144.6m,PASS (0 COL),PASSED
+Zandvoort Circuit,4-Robot Dynamic Overtake,2500,25.0,3/3 Overtaken,PASS (0 COL, 3/3 Overtaken),PASSED
